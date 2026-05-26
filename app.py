@@ -1,282 +1,120 @@
+#!/usr/bin/env python3
 """
-memoscope/server/app.py
-=======================
-FastAPI + WebSocket server that streams real-time memory metrics to the
-MEMOSCOPE dashboard.
+app.py — MEMOSCOPE Demo Launcher
+==================================
+The quickest way to see MEMOSCOPE in action:
+
+    python app.py                   # Transformer demo
+    python app.py --model mamba     # Mamba/SSM demo
+    python app.py --model rnn       # LSTM/RNN demo
+
+This script:
+  1. Instantiates a mock model (no downloads required)
+  2. Attaches MemoryInspector hooks
+  3. Launches the FastAPI + WebSocket server in a background thread
+  4. Streams synthetic tokens through the model continuously
+  5. Opens the live dashboard in your default browser
 
 Architecture
 ------------
-  ┌──────────────────────────────────────┐
-  │  inference thread                    │
-  │   model(token) → inspector.step()   │
-  │       → StepSnapshot                 │
-  │           → broadcast queue         │
-  └────────────────┬─────────────────────┘
-                   │  asyncio.Queue (JSON)
-  ┌────────────────▼─────────────────────┐
-  │  WebSocket endpoint /ws              │
-  │   → all connected browser clients   │
-  └──────────────────────────────────────┘
 
-HTTP endpoints
---------------
-  GET /           →  SPA index.html
-  GET /history    →  JSON array of last N snapshots (for page reload)
-  WS  /ws         →  live metric stream
+   ┌─────────────────────────────────────────────────────┐
+   │  Thread A: uvicorn server (FastAPI + WebSockets)     │
+   │    GET /          → SPA dashboard HTML               │
+   │    GET /history   → cached snapshot replay           │
+   │    WS  /ws        → live metric stream               │
+   └─────────────────────────────┬───────────────────────┘
+                                 │ asyncio.Queue
+   ┌─────────────────────────────▼───────────────────────┐
+   │  Thread B: inference loop                            │
+   │    for token in data_stream:                         │
+   │        model(token)                                  │
+   │        snapshot = inspector.step()   ← hooks fire   │
+   │        queue.put(snapshot.to_dict())                 │
+   └─────────────────────────────────────────────────────┘
 """
 
-from __future__ import annotations
-
-import asyncio
-import json
-import logging
-import threading
+import signal
+import sys
 import time
-from pathlib import Path
-from typing import Optional, Set
 
-import torch
-import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+# ── Parse CLI args (mirrors memoscope/cli.py for standalone use) ──────────
+import argparse
 
-from memoscope.core.hooks import MemoryInspector
-from memoscope.core.mock_models import synthetic_token_stream
+parser = argparse.ArgumentParser(
+    prog="app.py",
+    description="MEMOSCOPE Demo — Live Model Memory Inspector",
+)
+parser.add_argument(
+    "--model",
+    choices=["transformer", "mamba", "rnn", "ssm", "lstm"],
+    default="transformer",
+    help="Which mock model to demo (default: transformer)",
+)
+parser.add_argument("--host",  default="127.0.0.1")
+parser.add_argument("--port",  type=int, default=8765)
+parser.add_argument("--delay", type=float, default=0.12,
+                    help="Seconds between inference steps")
+parser.add_argument("--no-browser", action="store_true",
+                    help="Skip auto-opening the browser")
+parser.add_argument("--seq-len", type=int, default=1024,
+                    help="Total tokens to stream (default: 1024)")
 
-log = logging.getLogger("memoscope.server")
+args = parser.parse_args()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Connection manager (fan-out to all connected dashboards)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Banner ────────────────────────────────────────────────────────────────
+BANNER = r"""
+  __  __ _____ __  __  ___  ____   ____ ___  ____  _____
+ |  \/  | ____|  \/  |/ _ \/ ___| / ___/ _ \|  _ \| ____|
+ | |\/| |  _| | |\/| | | | \___ \| |  | | | | |_) |  _|
+ | |  | | |___| |  | | |_| |___) | |__| |_| |  __/| |___
+ |_|  |_|_____|_|  |_|\___/|____/ \____\___/|_|   |_____|
 
-class _ConnectionManager:
-    """Thread-safe WebSocket connection pool with JSON broadcast."""
+ Live Model Memory Inspector  ·  v0.1.0
+ ─────────────────────────────────────────────────────────
+"""
 
-    def __init__(self):
-        self.active: Set[WebSocket] = set()
-        self._lock = asyncio.Lock()
+print(BANNER)
+print(f"  model  : {args.model.upper()}")
+print(f"  server : http://{args.host}:{args.port}")
+print(f"  tokens : {args.seq_len}")
+print(f"  delay  : {args.delay}s / step")
+print()
+print("  Starting inference stream…  Press Ctrl+C to quit.\n")
 
-    async def connect(self, ws: WebSocket):
-        await ws.accept()
-        async with self._lock:
-            self.active.add(ws)
-        log.info(f"[ws] client connected  ({len(self.active)} total)")
+# ── Launch ────────────────────────────────────────────────────────────────
+def _sigint(sig, frame):
+    print("\n  MEMOSCOPE stopped cleanly.\n")
+    sys.exit(0)
 
-    async def disconnect(self, ws: WebSocket):
-        async with self._lock:
-            self.active.discard(ws)
-        log.info(f"[ws] client disconnected ({len(self.active)} remaining)")
+signal.signal(signal.SIGINT, _sigint)
 
-    async def broadcast(self, data: dict):
-        """Send `data` as JSON to every active WebSocket."""
-        if not self.active:
-            return
-        payload = json.dumps(data)
-        dead = set()
-        async with self._lock:
-            targets = set(self.active)
-        for ws in targets:
-            try:
-                await ws.send_text(payload)
-            except Exception:
-                dead.add(ws)
-        if dead:
-            async with self._lock:
-                self.active -= dead
+from memoscope import inspect_memory
+from memoscope.core.mock_models import synthetic_token_stream, get_mock_model
 
+# Build the mock model
+model = get_mock_model(args.model)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared state (module-level singletons, reset on run_server call)
-# ─────────────────────────────────────────────────────────────────────────────
-
-manager = _ConnectionManager()
-_broadcast_queue: asyncio.Queue = None          # set up inside async context
-_snapshot_cache: list = []
-_MAX_CACHE = 256
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FastAPI application
-# ─────────────────────────────────────────────────────────────────────────────
-
-app = FastAPI(
-    title="MEMOSCOPE",
-    description="Live Model Memory Inspector",
-    version="0.1.0",
+# Build a finite token stream of the requested length
+vocab_size = getattr(model.embed, "num_embeddings", 512)
+data_stream = synthetic_token_stream(
+    vocab_size=vocab_size,
+    seq_len=args.seq_len,
+    batch_size=1,
+    device="cpu",
 )
 
-TEMPLATES_DIR = Path(__file__).parent / "templates"
+# Launch everything — this call is non-blocking (returns MemoryInspector)
+inspector = inspect_memory(
+    model=model,
+    data_stream=data_stream,
+    host=args.host,
+    port=args.port,
+    open_browser=not args.no_browser,
+    mock_model_type=args.model,
+    stream_delay=args.delay,
+)
 
-
-@app.get("/", response_class=HTMLResponse)
-async def serve_dashboard():
-    """Serve the single-page dashboard."""
-    index_path = TEMPLATES_DIR / "index.html"
-    return HTMLResponse(content=index_path.read_text(encoding="utf-8"))
-
-
-@app.get("/history", response_class=JSONResponse)
-async def get_history():
-    """Return cached snapshot history for clients that connect mid-run."""
-    return JSONResponse(content={"snapshots": _snapshot_cache[-128:]})
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok", "snapshots_broadcast": len(_snapshot_cache)}
-
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
-    try:
-        # Immediately send the history so new clients see existing data
-        if _snapshot_cache:
-            await websocket.send_text(
-                json.dumps({"type": "history", "snapshots": _snapshot_cache[-64:]})
-            )
-        # Keep connection alive — messages come from broadcast queue
-        while True:
-            await asyncio.sleep(30)   # heartbeat (client sends nothing)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        await manager.disconnect(websocket)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Background queue consumer (runs inside asyncio event loop)
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def _queue_consumer():
-    """Drain the broadcast queue and fan-out to all WebSocket clients."""
-    global _broadcast_queue
-    _broadcast_queue = asyncio.Queue(maxsize=1024)
-
-    while True:
-        snapshot_dict = await _broadcast_queue.get()
-        snapshot_dict["type"] = "snapshot"
-        _snapshot_cache.append(snapshot_dict)
-        if len(_snapshot_cache) > _MAX_CACHE:
-            _snapshot_cache.pop(0)
-        await manager.broadcast(snapshot_dict)
-
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(_queue_consumer())
-    log.info("MEMOSCOPE server started.  Queue consumer active.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Inference thread (runs in background, pumps metrics into the queue)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _inference_loop(
-    inspector: MemoryInspector,
-    data_stream,
-    stream_delay: float,
-    loop: asyncio.AbstractEventLoop,
-):
-    """
-    Runs model inference step-by-step and pushes StepSnapshots to the
-    asyncio broadcast queue.
-
-    Designed to run in a daemon thread alongside the uvicorn event loop.
-    """
-    log.info(f"[inference] starting loop  model={type(inspector.model).__name__}")
-
-    # Give the server a moment to fully bind before we start pushing data
-    time.sleep(1.5)
-
-    model = inspector.model
-
-    with torch.no_grad():
-        for token_batch in data_stream:
-            t0 = time.perf_counter()
-
-            try:
-                _ = model(token_batch)
-                snapshot = inspector.step()
-                snapshot_dict = snapshot.to_dict()
-
-                # Thread-safe enqueue into the asyncio loop
-                asyncio.run_coroutine_threadsafe(
-                    _broadcast_queue.put(snapshot_dict), loop
-                )
-            except Exception as exc:
-                log.warning(f"[inference] step error: {exc}")
-
-            elapsed = time.perf_counter() - t0
-            wait = max(0.0, stream_delay - elapsed)
-            time.sleep(wait)
-
-    log.info("[inference] stream finished.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Public entry point
-# ─────────────────────────────────────────────────────────────────────────────
-
-def run_server(
-    inspector: MemoryInspector,
-    data_stream=None,
-    host: str = "127.0.0.1",
-    port: int = 8765,
-    stream_delay: float = 0.15,
-):
-    """
-    Launch the MEMOSCOPE HTTP + WebSocket server (blocking).
-
-    Called from a daemon thread so the caller can return immediately.
-
-    Parameters
-    ----------
-    inspector : MemoryInspector
-        Attached to the model whose metrics we want to stream.
-    data_stream : Iterable | None
-        Token generator.  Defaults to ``synthetic_token_stream()``.
-    host, port : str, int
-        Server binding.
-    stream_delay : float
-        Seconds between steps (controls dashboard animation speed).
-    """
-    if data_stream is None:
-        model = inspector.model
-        vocab_size = getattr(model, "embed", None)
-        if vocab_size is not None:
-            vocab_size = getattr(model.embed, "num_embeddings", 512)
-        else:
-            vocab_size = 512
-        data_stream = synthetic_token_stream(
-            vocab_size=vocab_size,
-            seq_len=512,
-            batch_size=1,
-        )
-
-    # We need to wire the inference thread to the event loop *after* uvicorn
-    # starts.  We do this by patching a startup hook.
-
-    _inference_started = threading.Event()
-
-    @app.on_event("startup")
-    async def _start_inference():
-        loop = asyncio.get_running_loop()
-        t = threading.Thread(
-            target=_inference_loop,
-            args=(inspector, data_stream, stream_delay, loop),
-            daemon=True,
-        )
-        t.start()
-        _inference_started.set()
-        log.info("[inference] thread launched from startup event.")
-
-    config = uvicorn.Config(
-        app,
-        host=host,
-        port=port,
-        log_level="warning",
-        loop="asyncio",
-    )
-    server = uvicorn.Server(config)
-    server.run()
+# Keep the main thread alive so daemon threads continue
+while True:
+    time.sleep(1)

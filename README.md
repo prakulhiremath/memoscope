@@ -7,7 +7,7 @@
 [![PyTorch](https://img.shields.io/badge/pytorch-2.1%2B-ee4c2c?style=flat-square&logo=pytorch)](https://pytorch.org)
 [![FastAPI](https://img.shields.io/badge/fastapi-0.110%2B-009688?style=flat-square&logo=fastapi)](https://fastapi.tiangolo.com)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/your-org/memoscope?style=flat-square)](https://github.com/your-org/memoscope/stargazers)
+
 
 ```
   __  __ _____ __  __  ___  ____   ____ ___  ____  _____

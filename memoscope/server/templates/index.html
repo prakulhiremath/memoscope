@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MEMOSCOPE — Live Model Memory Inspector</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet" />
+
+<style>
+  :root {
+    --bg:        #020408;
+    --bg2:       #060d14;
+    --panel:     #0a1520;
+    --border:    #0f2a3f;
+    --cyan:      #00f5ff;
+    --green:     #00ff88;
+    --magenta:   #ff00aa;
+    --amber:     #ffb700;
+    --red:       #ff2244;
+    --text:      #b0ccd8;
+    --dim:       #3a5a6a;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.08) 2px,
+      rgba(0,0,0,0.08) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* Animated grid background */
+  .grid-bg {
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,245,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,245,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    animation: gridShift 20s linear infinite;
+    pointer-events: none;
+    z-index: 0;
+  }
+  @keyframes gridShift {
+    from { background-position: 0 0; }
+    to   { background-position: 40px 40px; }
+  }
+
+  /* Glow utilities */
+  .glow-cyan   { text-shadow: 0 0 8px var(--cyan),  0 0 20px var(--cyan); }
+  .glow-green  { text-shadow: 0 0 8px var(--green), 0 0 20px var(--green); }
+  .glow-mag    { text-shadow: 0 0 8px var(--magenta),0 0 20px var(--magenta); }
+  .glow-amber  { text-shadow: 0 0 8px var(--amber), 0 0 20px var(--amber); }
+  .glow-red    { text-shadow: 0 0 8px var(--red),   0 0 20px var(--red); }
+
+  .box-glow-cyan { box-shadow: 0 0 1px var(--cyan), inset 0 0 20px rgba(0,245,255,0.04); }
+  .box-glow-green{ box-shadow: 0 0 1px var(--green),inset 0 0 20px rgba(0,255,136,0.04); }
+  .box-glow-mag  { box-shadow: 0 0 1px var(--magenta),inset 0 0 20px rgba(255,0,170,0.04); }
+  .box-glow-amber{ box-shadow: 0 0 1px var(--amber),inset 0 0 20px rgba(255,183,0,0.04); }
+
+  /* Panel */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    position: relative;
+  }
+  .panel::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+    opacity: 0.6;
+  }
+
+  /* Panel header */
+  .panel-title {
+    font-family: 'Orbitron', monospace;
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--cyan);
+    padding: 10px 14px 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* Monospace data values */
+  .mono { font-family: 'Share Tech Mono', monospace; }
+
+  /* KPI badge */
+  .kpi-val {
+    font-family: 'Orbitron', monospace;
+    font-size: 26px;
+    font-weight: 900;
+    line-height: 1;
+  }
+  .kpi-label {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    color: var(--dim);
+    text-transform: uppercase;
+    margin-top: 4px;
+  }
+
+  /* Status dot */
+  .dot-live {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+    animation: blink 1.2s ease-in-out infinite;
+  }
+  @keyframes blink {
+    0%,100% { opacity: 1; }
+    50%      { opacity: 0.3; }
+  }
+
+  /* Collapse bar */
+  .collapse-bar-track {
+    height: 8px;
+    background: var(--border);
+    border-radius: 1px;
+    overflow: hidden;
+  }
+  .collapse-bar-fill {
+    height: 100%;
+    border-radius: 1px;
+    transition: width 0.4s ease, background 0.4s ease;
+  }
+
+  /* Heatmap grid */
+  #heatmap-grid {
+    display: grid;
+    gap: 2px;
+  }
+  .hmap-cell {
+    border-radius: 1px;
+    transition: background 0.3s ease;
+    aspect-ratio: 1;
+  }
+
+  /* Layer bar chart */
+  .layer-bar-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .layer-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .layer-bar-label {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    color: var(--dim);
+    width: 42px;
+    flex-shrink: 0;
+  }
+  .layer-bar-track {
+    flex: 1;
+    height: 10px;
+    background: var(--border);
+    border-radius: 1px;
+    overflow: hidden;
+  }
+  .layer-bar-fill {
+    height: 100%;
+    border-radius: 1px;
+    transition: width 0.35s ease;
+  }
+  .layer-bar-val {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    color: var(--text);
+    width: 38px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  /* Log console */
+  #log-console {
+    height: 110px;
+    overflow-y: auto;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    color: var(--dim);
+    padding: 8px 12px;
+    scroll-behavior: smooth;
+  }
+  #log-console .log-line { margin-bottom: 2px; }
+  #log-console .log-line span { color: var(--cyan); }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* Chart canvas containers */
+  .chart-wrap { position: relative; width: 100%; }
+
+  /* Model type badge */
+  .model-badge {
+    display: inline-block;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    padding: 2px 8px;
+    border-radius: 1px;
+    text-transform: uppercase;
+  }
+
+  /* Corner decorators */
+  .corner-tl, .corner-tr, .corner-bl, .corner-br {
+    position: absolute;
+    width: 10px; height: 10px;
+    border-color: var(--cyan);
+    border-style: solid;
+    opacity: 0.5;
+  }
+  .corner-tl { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
+  .corner-tr { top: -1px; right: -1px; border-width: 2px 2px 0 0; }
+  .corner-bl { bottom: -1px; left: -1px; border-width: 0 0 2px 2px; }
+  .corner-br { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
+
+  /* Pulse animation on new data */
+  @keyframes dataPulse {
+    0%   { opacity: 1; }
+    30%  { opacity: 0.6; }
+    100% { opacity: 1; }
+  }
+  .data-pulse { animation: dataPulse 0.4s ease; }
+
+  /* Header gradient line */
+  .header-rule {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--cyan) 20%, var(--magenta) 50%, var(--cyan) 80%, transparent);
+    margin: 0;
+  }
+
+  /* Connection status banner */
+  #status-bar {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    padding: 3px 16px;
+    background: rgba(0,245,255,0.05);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+</style>
+</head>
+<body>
+
+<div class="grid-bg"></div>
+
+<!-- ── HEADER ─────────────────────────────────────────────────────────────── -->
+<header style="position:relative;z-index:10;">
+  <div style="padding:12px 20px 10px; display:flex; align-items:center; justify-content:space-between; background:rgba(2,4,8,0.95); border-bottom:1px solid var(--border);">
+    <div style="display:flex;align-items:center;gap:16px;">
+      <div>
+        <div style="font-family:'Orbitron',monospace;font-size:22px;font-weight:900;color:var(--cyan);" class="glow-cyan">
+          MEM<span style="color:var(--magenta);">O</span>SCOPE
+        </div>
+        <div style="font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--dim);letter-spacing:0.2em;margin-top:2px;">
+          LIVE MODEL MEMORY INSPECTOR &nbsp;//&nbsp; v0.1.0
+        </div>
+      </div>
+      <div id="model-type-badge" class="model-badge" style="background:rgba(0,245,255,0.08);border:1px solid rgba(0,245,255,0.25);color:var(--cyan);">
+        TRANSFORMER
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:20px;">
+      <div style="text-align:right;">
+        <div style="font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--dim);">TOKENS PROCESSED</div>
+        <div id="hdr-step" style="font-family:'Orbitron',monospace;font-size:16px;color:var(--green);" class="glow-green mono">0</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--dim);">MEAN DRIFT</div>
+        <div id="hdr-drift" style="font-family:'Orbitron',monospace;font-size:16px;color:var(--amber);" class="glow-amber mono">0.000</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span class="dot-live" id="status-dot" style="background:var(--red);box-shadow:0 0 6px var(--red);"></span>
+        <span id="status-text" style="font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--red);">CONNECTING</span>
+      </div>
+    </div>
+  </div>
+  <div class="header-rule"></div>
+</header>
+
+<!-- ── MAIN GRID ───────────────────────────────────────────────────────────── -->
+<main style="position:relative;z-index:10;padding:14px 16px;display:grid;grid-template-columns:1fr 1fr 1fr;grid-template-rows:auto auto auto auto;gap:12px;">
+
+  <!-- KPI ROW ───────────────────────────────────────────────────────────── -->
+  <div class="panel box-glow-cyan" style="grid-column:1/2;padding:14px 18px;">
+    <div class="corner-tl"></div><div class="corner-tr"></div><div class="corner-bl"></div><div class="corner-br"></div>
+    <div class="kpi-label">Context Length</div>
+    <div class="kpi-val glow-cyan" id="kpi-seq" style="color:var(--cyan);margin-top:6px;">0</div>
+    <div style="margin-top:8px;font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--dim);">tokens in context window</div>
+  </div>
+
+  <div class="panel box-glow-green" style="grid-column:2/3;padding:14px 18px;">
+    <div class="corner-tl" style="border-color:var(--green);"></div><div class="corner-tr" style="border-color:var(--green);"></div><div class="corner-bl" style="border-color:var(--green);"></div><div class="corner-br" style="border-color:var(--green);"></div>
+    <div class="kpi-label">Memory Entropy</div>
+    <div class="kpi-val glow-green" id="kpi-entropy" style="color:var(--green);margin-top:6px;">0.000</div>
+    <div style="margin-top:8px;font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--dim);">mean attention distribution H</div>
+  </div>
+
+  <div class="panel box-glow-mag" style="grid-column:3/4;padding:14px 18px;">
+    <div class="corner-tl" style="border-color:var(--magenta);"></div><div class="corner-tr" style="border-color:var(--magenta);"></div><div class="corner-bl" style="border-color:var(--magenta);"></div><div class="corner-br" style="border-color:var(--magenta);"></div>
+    <div class="kpi-label">Collapse Score</div>
+    <div class="kpi-val glow-mag" id="kpi-collapse" style="color:var(--magenta);margin-top:6px;">0.000</div>
+    <div style="margin-top:8px;">
+      <div class="collapse-bar-track">
+        <div class="collapse-bar-fill" id="collapse-bar" style="width:0%;background:var(--green);"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DRIFT CHART (full width) ──────────────────────────────────────────── -->
+  <div class="panel box-glow-cyan" style="grid-column:1/4;padding:0;">
+    <div class="panel-title">⟁ Hidden State Drift  — D(t) = 1 − cos(h_t · h_{t−1})</div>
+    <div style="padding:12px 14px 14px;" class="chart-wrap">
+      <canvas id="drift-chart" height="110"></canvas>
+    </div>
+  </div>
+
+  <!-- ENTROPY CHART ─────────────────────────────────────────────────────── -->
+  <div class="panel box-glow-green" style="grid-column:1/2;padding:0;">
+    <div class="panel-title">≋ Attention Entropy per Layer</div>
+    <div style="padding:12px 14px 14px;" class="chart-wrap">
+      <canvas id="entropy-chart" height="130"></canvas>
+    </div>
+  </div>
+
+  <!-- LAYER NORMS ───────────────────────────────────────────────────────── -->
+  <div class="panel" style="grid-column:2/3;padding:0;">
+    <div class="panel-title" style="color:var(--amber);">⊞ Layer-wise Hidden State ‖h_t‖₂</div>
+    <div style="padding:12px 14px;" id="layer-norm-bars" class="layer-bar-wrap">
+      <div style="font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--dim);text-align:center;padding:30px 0;">
+        awaiting data…
+      </div>
+    </div>
+  </div>
+
+  <!-- TOKEN DECAY CHART ─────────────────────────────────────────────────── -->
+  <div class="panel box-glow-mag" style="grid-column:3/4;padding:0;">
+    <div class="panel-title">⟳ Memory Decay — Early Token Retention</div>
+    <div style="padding:12px 14px 14px;" class="chart-wrap">
+      <canvas id="decay-chart" height="130"></canvas>
+    </div>
+  </div>
+
+  <!-- TOKEN RETENTION HEATMAP ───────────────────────────────────────────── -->
+  <div class="panel" style="grid-column:1/3;padding:0;">
+    <div class="panel-title" style="color:var(--magenta);">◈ Token Retention Heatmap — Layer × Token Position</div>
+    <div style="padding:12px 14px 14px;">
+      <div id="heatmap-grid"></div>
+      <div style="display:flex;justify-content:space-between;margin-top:6px;">
+        <span style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--dim);">LOW RETENTION</span>
+        <div style="flex:1;margin:3px 12px;height:4px;background:linear-gradient(90deg,#020408,#ff00aa);border-radius:2px;"></div>
+        <span style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--magenta);">HIGH RETENTION</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- SYSTEM LOG ────────────────────────────────────────────────────────── -->
+  <div class="panel" style="grid-column:3/4;padding:0;">
+    <div class="panel-title" style="color:var(--green);">▸ System Log</div>
+    <div id="log-console">
+      <div class="log-line"><span>[SYS]</span> MEMOSCOPE initialising…</div>
+      <div class="log-line"><span>[NET]</span> connecting to inference stream…</div>
+    </div>
+  </div>
+
+</main>
+
+<!-- ── JAVASCRIPT ─────────────────────────────────────────────────────────── -->
+<script>
+// ──────────────────────────────────────────────────────────────────────────
+// CONFIG
+// ──────────────────────────────────────────────────────────────────────────
+const MAX_POINTS   = 120;   // rolling window for time-series charts
+const MAX_TOKENS   = 32;    // heatmap columns
+const COLLAPSE_WARN = 0.55; // amber warning threshold
+const COLLAPSE_CRIT = 0.78; // red critical threshold
+
+// ──────────────────────────────────────────────────────────────────────────
+// STATE
+// ──────────────────────────────────────────────────────────────────────────
+let stepHistory    = [];    // StepSnapshot[]
+let driftSeries    = [];    // {x: step, y: drift}[]
+let entropySeries  = {};    // layerIdx -> [{x,y}]
+let decaySeries    = [];    // current token-retention array
+
+// ──────────────────────────────────────────────────────────────────────────
+// COLOUR HELPERS
+// ──────────────────────────────────────────────────────────────────────────
+const C = {
+  cyan:    '#00f5ff',
+  green:   '#00ff88',
+  mag:     '#ff00aa',
+  amber:   '#ffb700',
+  red:     '#ff2244',
+  dimBg:   'rgba(0,245,255,0.06)',
+  gridLine:'rgba(15,42,63,0.8)',
+};
+
+function heatColor(v) {
+  // 0 → dark blue-black, 1 → neon magenta
+  const r = Math.round(v * 255);
+  const g = Math.round(v * v * 20);
+  const b = Math.round((1 - v) * 80 + v * 60);
+  const alpha = 0.15 + v * 0.85;
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function collapseColor(score) {
+  if (score >= COLLAPSE_CRIT) return C.red;
+  if (score >= COLLAPSE_WARN) return C.amber;
+  return C.green;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// CHART DEFAULTS
+// ──────────────────────────────────────────────────────────────────────────
+Chart.defaults.color          = '#3a5a6a';
+Chart.defaults.borderColor    = '#0f2a3f';
+Chart.defaults.font.family    = "'Share Tech Mono', monospace";
+Chart.defaults.font.size      = 10;
+Chart.defaults.plugins.legend.display = false;
+
+const baseChartOpts = (yLabel) => ({
+  responsive: true,
+  animation:  { duration: 200 },
+  interaction: { mode: 'index', intersect: false },
+  scales: {
+    x: {
+      type: 'linear',
+      title: { display: false },
+      grid:  { color: C.gridLine },
+      ticks: { maxTicksLimit: 8 },
+    },
+    y: {
+      title: { display: !!yLabel, text: yLabel, color: '#3a5a6a', font: { size: 9 } },
+      grid:  { color: C.gridLine },
+      ticks: { maxTicksLimit: 5 },
+      min:   0,
+    }
+  },
+  plugins: { tooltip: { enabled: true }, legend: { display: false } },
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// 1. DRIFT CHART
+// ──────────────────────────────────────────────────────────────────────────
+const driftCtx = document.getElementById('drift-chart').getContext('2d');
+const driftChart = new Chart(driftCtx, {
+  type: 'line',
+  data: {
+    datasets: [{
+      label: 'State Drift D(t)',
+      data: [],
+      borderColor: C.cyan,
+      backgroundColor: 'rgba(0,245,255,0.06)',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      fill: true,
+      tension: 0.4,
+    }, {
+      label: 'Mean Drift (EMA)',
+      data: [],
+      borderColor: C.amber,
+      borderWidth: 1,
+      borderDash: [4,3],
+      pointRadius: 0,
+      fill: false,
+      tension: 0.5,
+    }]
+  },
+  options: {
+    ...baseChartOpts('drift D(t)'),
+    scales: {
+      ...baseChartOpts().scales,
+      x: { ...baseChartOpts().scales.x, type: 'linear' },
+      y: { ...baseChartOpts().scales.y, max: 2.0 }
+    }
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// 2. ENTROPY CHART (multi-layer)
+// ──────────────────────────────────────────────────────────────────────────
+const entCtx = document.getElementById('entropy-chart').getContext('2d');
+const LAYER_COLORS = [C.green, C.cyan, C.mag, C.amber, '#7f5af0', '#2cb67d'];
+const entChart = new Chart(entCtx, {
+  type: 'line',
+  data: { datasets: [] },
+  options: {
+    ...baseChartOpts('entropy H'),
+    plugins: {
+      legend: { display: true, position: 'bottom',
+        labels: { color: '#3a5a6a', font: { size: 9 }, boxWidth: 10, padding: 6 }
+      }
+    },
+    scales: {
+      x: { type: 'linear', grid: { color: C.gridLine }, ticks: { maxTicksLimit: 6 } },
+      y: { min: 0, max: 1,  grid: { color: C.gridLine }, ticks: { maxTicksLimit: 4 } },
+    },
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// 3. MEMORY DECAY / TOKEN RETENTION CHART
+// ──────────────────────────────────────────────────────────────────────────
+const decayCtx = document.getElementById('decay-chart').getContext('2d');
+const decayChart = new Chart(decayCtx, {
+  type: 'bar',
+  data: {
+    labels: Array.from({length: MAX_TOKENS}, (_,i) => i),
+    datasets: [{
+      label: 'Token Retention',
+      data: new Array(MAX_TOKENS).fill(0),
+      backgroundColor: Array.from({length: MAX_TOKENS}, (_, i) => {
+        const v = 1 - i / MAX_TOKENS;
+        return `rgba(255, ${Math.round(v*30)}, ${Math.round(170*v)}, ${0.3 + v*0.65})`;
+      }),
+      borderColor: 'transparent',
+      borderRadius: 1,
+    }]
+  },
+  options: {
+    responsive: true,
+    animation: { duration: 300 },
+    scales: {
+      x: {
+        title: { display: true, text: 'token position', color: '#3a5a6a', font: { size: 9 } },
+        grid: { display: false },
+        ticks: { maxTicksLimit: 8 },
+      },
+      y: {
+        min: 0,
+        grid: { color: C.gridLine },
+        ticks: { maxTicksLimit: 4 },
+      }
+    },
+    plugins: { legend: { display: false } }
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// EMA helper
+// ──────────────────────────────────────────────────────────────────────────
+function ema(series, alpha = 0.15) {
+  if (!series.length) return [];
+  const out = [{ x: series[0].x, y: series[0].y }];
+  for (let i = 1; i < series.length; i++) {
+    out.push({ x: series[i].x, y: alpha * series[i].y + (1 - alpha) * out[i-1].y });
+  }
+  return out;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// HEATMAP RENDERER
+// ──────────────────────────────────────────────────────────────────────────
+let heatRows = 0;
+
+function renderHeatmap(snapshots) {
+  const grid    = document.getElementById('heatmap-grid');
+  const numRows = Math.min(snapshots.length, 24);
+  const numCols = MAX_TOKENS;
+
+  if (numRows === 0) return;
+
+  // Only rebuild DOM when row count changes
+  if (numRows !== heatRows) {
+    grid.style.gridTemplateColumns = `repeat(${numCols}, 1fr)`;
+    grid.style.gridTemplateRows    = `repeat(${numRows}, 12px)`;
+    grid.innerHTML = '';
+    for (let r = 0; r < numRows; r++) {
+      for (let c = 0; c < numCols; c++) {
+        const cell = document.createElement('div');
+        cell.className = 'hmap-cell';
+        cell.dataset.r = r;
+        cell.dataset.c = c;
+        grid.appendChild(cell);
+      }
+    }
+    heatRows = numRows;
+  }
+
+  const cells = grid.querySelectorAll('.hmap-cell');
+  const recent = snapshots.slice(-numRows);
+
+  recent.forEach((snap, r) => {
+    const retention = snap.token_retention?.[0] ?? [];
+    for (let c = 0; c < numCols; c++) {
+      const val = retention[c] ?? 0;
+      const normVal = Math.min(val * 15, 1);  // scale for visibility
+      cells[r * numCols + c].style.background = heatColor(normVal);
+    }
+  });
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// LAYER NORM BARS
+// ──────────────────────────────────────────────────────────────────────────
+function renderLayerNorms(norms) {
+  const container = document.getElementById('layer-norm-bars');
+  if (!norms || !norms.length) return;
+
+  const maxNorm = Math.max(...norms, 1);
+  let html = '';
+  norms.forEach((n, i) => {
+    const pct = Math.min((n / maxNorm) * 100, 100).toFixed(1);
+    const color = LAYER_COLORS[i % LAYER_COLORS.length];
+    html += `
+      <div class="layer-bar-row">
+        <div class="layer-bar-label">L${String(i).padStart(2,'0')}</div>
+        <div class="layer-bar-track">
+          <div class="layer-bar-fill" style="width:${pct}%;background:${color};box-shadow:0 0 4px ${color}40;"></div>
+        </div>
+        <div class="layer-bar-val">${n.toFixed(2)}</div>
+      </div>`;
+  });
+  container.innerHTML = html;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// LOG CONSOLE
+// ──────────────────────────────────────────────────────────────────────────
+const logEl = document.getElementById('log-console');
+let logCount = 0;
+
+function addLog(tag, msg, color) {
+  logCount++;
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.innerHTML = `<span style="color:${color || 'var(--cyan)'};">[${tag}]</span> ${msg}`;
+  logEl.appendChild(line);
+  // Keep last 80 lines
+  while (logEl.children.length > 80) logEl.removeChild(logEl.firstChild);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// KPI UPDATE
+// ──────────────────────────────────────────────────────────────────────────
+function updateKPIs(snap) {
+  document.getElementById('kpi-seq').textContent     = snap.seq_len;
+  document.getElementById('hdr-step').textContent    = snap.step;
+  document.getElementById('hdr-drift').textContent   = snap.mean_drift.toFixed(3);
+
+  const H_mean = snap.attention_entropy.length
+    ? (snap.attention_entropy.reduce((a,b) => a+b, 0) / snap.attention_entropy.length)
+    : 0;
+  document.getElementById('kpi-entropy').textContent = H_mean.toFixed(3);
+
+  const cs = snap.collapse_score;
+  document.getElementById('kpi-collapse').textContent = cs.toFixed(3);
+  document.getElementById('kpi-collapse').style.color  = collapseColor(cs);
+
+  const bar = document.getElementById('collapse-bar');
+  bar.style.width      = `${(cs * 100).toFixed(1)}%`;
+  bar.style.background = collapseColor(cs);
+
+  // Update model badge
+  const badge = document.getElementById('model-type-badge');
+  const typeColors = { transformer: C.cyan, mamba: C.green, rnn: C.amber };
+  badge.textContent = snap.model_type.toUpperCase();
+  badge.style.color       = typeColors[snap.model_type] || C.cyan;
+  badge.style.borderColor = (typeColors[snap.model_type] || C.cyan).replace(')', ',0.3)').replace('rgb', 'rgba');
+
+  // Model type display
+  document.getElementById('model-type-badge').textContent = snap.model_type.toUpperCase();
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// CHART UPDATE
+// ──────────────────────────────────────────────────────────────────────────
+function updateCharts(snap) {
+  const step = snap.step;
+
+  // 1. Drift series
+  driftSeries.push({ x: step, y: snap.mean_drift });
+  if (driftSeries.length > MAX_POINTS) driftSeries.shift();
+
+  driftChart.data.datasets[0].data = [...driftSeries];
+  driftChart.data.datasets[1].data = ema(driftSeries, 0.12);
+  driftChart.update('none');
+
+  // 2. Entropy series (one dataset per layer)
+  snap.attention_entropy.forEach((H, li) => {
+    if (!entropySeries[li]) entropySeries[li] = [];
+    entropySeries[li].push({ x: step, y: H });
+    if (entropySeries[li].length > MAX_POINTS) entropySeries[li].shift();
+  });
+
+  const numLayers = Object.keys(entropySeries).length;
+  while (entChart.data.datasets.length < numLayers) {
+    const li = entChart.data.datasets.length;
+    entChart.data.datasets.push({
+      label: `L${li}`,
+      data: [],
+      borderColor: LAYER_COLORS[li % LAYER_COLORS.length],
+      borderWidth: 1.2,
+      pointRadius: 0,
+      fill: false,
+      tension: 0.4,
+    });
+  }
+  Object.entries(entropySeries).forEach(([li, pts]) => {
+    if (entChart.data.datasets[li]) entChart.data.datasets[li].data = [...pts];
+  });
+  entChart.update('none');
+
+  // 3. Token retention (use first layer's retention row)
+  const retention = snap.token_retention?.[0] ?? [];
+  decayChart.data.datasets[0].data = retention.slice(0, MAX_TOKENS).concat(
+    new Array(Math.max(0, MAX_TOKENS - retention.length)).fill(0)
+  );
+  decayChart.update('none');
+
+  // 4. Layer norm bars
+  renderLayerNorms(snap.layer_norms);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// PROCESS SNAPSHOT
+// ──────────────────────────────────────────────────────────────────────────
+function processSnapshot(snap) {
+  stepHistory.push(snap);
+  if (stepHistory.length > 300) stepHistory.shift();
+
+  updateKPIs(snap);
+  updateCharts(snap);
+
+  // Heatmap every 3 steps to avoid thrashing DOM
+  if (snap.step % 3 === 0) renderHeatmap(stepHistory);
+
+  // Log significant events
+  if (snap.collapse_score >= COLLAPSE_CRIT) {
+    addLog('CRIT', `Context collapse at step ${snap.step} — score ${snap.collapse_score.toFixed(3)}`, C.red);
+  } else if (snap.collapse_score >= COLLAPSE_WARN && snap.step % 10 === 0) {
+    addLog('WARN', `Elevated collapse risk ${snap.collapse_score.toFixed(3)} at step ${snap.step}`, C.amber);
+  }
+  if (snap.step > 0 && snap.step % 50 === 0) {
+    addLog('INFO', `Step ${snap.step} — drift ${snap.mean_drift.toFixed(3)} — entropy ${(snap.attention_entropy[0]||0).toFixed(3)}`, C.green);
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// WEBSOCKET
+// ──────────────────────────────────────────────────────────────────────────
+let ws = null;
+let reconnectDelay = 1000;
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+  ws.onopen = () => {
+    reconnectDelay = 1000;
+    document.getElementById('status-dot').style.cssText  = 'background:var(--green);box-shadow:0 0 6px var(--green);';
+    document.getElementById('status-text').style.color   = 'var(--green)';
+    document.getElementById('status-text').textContent   = 'LIVE';
+    addLog('NET', 'WebSocket connected — awaiting inference stream', C.green);
+  };
+
+  ws.onmessage = (evt) => {
+    try {
+      const msg = JSON.parse(evt.data);
+      if (msg.type === 'history' && Array.isArray(msg.snapshots)) {
+        addLog('SYS', `Replaying ${msg.snapshots.length} historical snapshots`, C.cyan);
+        msg.snapshots.forEach(processSnapshot);
+      } else if (msg.type === 'snapshot') {
+        processSnapshot(msg);
+      }
+    } catch (e) {
+      console.warn('WS parse error:', e);
+    }
+  };
+
+  ws.onerror = () => {
+    addLog('ERR', 'WebSocket error — retrying…', C.red);
+  };
+
+  ws.onclose = () => {
+    document.getElementById('status-dot').style.cssText  = 'background:var(--amber);box-shadow:0 0 6px var(--amber);';
+    document.getElementById('status-text').style.color   = 'var(--amber)';
+    document.getElementById('status-text').textContent   = 'RECONNECTING';
+    addLog('NET', `Connection lost — reconnect in ${reconnectDelay}ms`, C.amber);
+    setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 1.5, 10000);
+  };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// BOOT
+// ──────────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  addLog('SYS', 'MEMOSCOPE v0.1.0 booting…', C.cyan);
+  addLog('SYS', `Dashboard ready — ${window.location.host}`, C.cyan);
+  connect();
+});
+</script>
+</body>
+</html>

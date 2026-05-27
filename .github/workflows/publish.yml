@@ -1,6 +1,5 @@
 name: Publish to PyPI
 
-# Triggers on any tag shaped like v0.1.0, v1.2.3, etc.
 on:
   push:
     tags:
@@ -8,24 +7,28 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+.*"
 
 jobs:
-  # ── 1. Run the full test suite first ──────────────────────────────────────
+  # ── 1. Run tests ──────────────────────────────────────────────────────────
   test:
     name: Test before publish
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
+
       - run: pip install -e ".[dev]"
       - run: pytest tests/ -v --tb=short
 
-  # ── 2. Build sdist + wheel ─────────────────────────────────────────────────
+  # ── 2. Build wheel + sdist ────────────────────────────────────────────────
   build:
     name: Build distributions
     needs: test
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -37,64 +40,67 @@ jobs:
       - name: Install build tools
         run: pip install build twine
 
-      - name: Build sdist and wheel
+      - name: Build package
         run: python -m build
 
-      - name: Verify with twine
+      - name: Verify package
         run: twine check dist/*
 
-      - name: Upload build artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
           retention-days: 5
 
-  # ── 3. Publish to real PyPI ───────────────────────────────────────────────
+  # ── 3. Publish to PyPI ────────────────────────────────────────────────────
   publish-pypi:
     name: Publish to PyPI
-    needs: publish-testpypi
+    needs: build
     runs-on: ubuntu-latest
+
     environment:
       name: pypi
       url: https://pypi.org/p/memoscope
+
     permissions:
-      id-token: write   # OIDC Trusted Publishing — no API token secrets needed
+      id-token: write
 
     steps:
-      - name: Download build artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
 
-      - name: Publish to PyPI
+      - name: Publish package
         uses: pypa/gh-action-pypi-publish@release/v1
 
-  # ── 4. Create GitHub Release with changelog ───────────────────────────────
+  # ── 4. Create GitHub Release ──────────────────────────────────────────────
   github-release:
     name: Create GitHub Release
     needs: publish-pypi
     runs-on: ubuntu-latest
+
     permissions:
       contents: write
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # full history for changelog
+          fetch-depth: 0
 
-      - name: Download build artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
 
-      - name: Extract version from tag
+      - name: Extract version
         id: version
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
 
-      - name: Create GitHub Release
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           name: "MEMOSCOPE v${{ steps.version.outputs.VERSION }}"
@@ -109,11 +115,12 @@ jobs:
 
             ```python
             from memoscope import inspect_memory
-            inspect_memory()           # transformer demo
-            inspect_memory(mock_model_type="mamba")   # SSM demo
+
+            inspect_memory()
+            inspect_memory(mock_model_type="mamba")
             ```
 
-            See the [README](https://github.com/${{ github.repository }}#readme) for full docs.
+            See the README for full documentation.
           files: dist/*
           draft: false
           prerelease: ${{ contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}

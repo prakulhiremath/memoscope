@@ -7,8 +7,8 @@
 [![PyTorch](https://img.shields.io/badge/pytorch-2.1%2B-ee4c2c?style=flat-square&logo=pytorch)](https://pytorch.org)
 [![FastAPI](https://img.shields.io/badge/fastapi-0.110%2B-009688?style=flat-square&logo=fastapi)](https://fastapi.tiangolo.com)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/your-org/memoscope?style=flat-square)](https://github.com/your-org/memoscope/stargazers)
-<a href="https://medium.com/@prakulhiremath/the-ghost-in-the-context-window-introducing-memoscope-5011be9a01c9"><img src="https://img.shields.io/badge/medium-deep--dive-green?style=flat-square" /></a>
+[![Medium Deep Dive](https://img.shields.io/badge/medium-deep--dive-green?style=flat-square)](https://medium.com/@prakulhiremath/the-ghost-in-the-context-window-introducing-memoscope-5011be9a01c9)
+[![Stars](https://img.shields.io/github/stars/prakulhiremath/memoscope?style=flat-square)](https://github.com/prakulhiremath/memoscope/stargazers)
 
 
 ```

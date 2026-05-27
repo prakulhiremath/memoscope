@@ -1,0 +1,7 @@
+include README.md
+include LICENSE
+include CONTRIBUTING.md
+include memoscope/py.typed
+recursive-include memoscope/server/templates *.html
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]

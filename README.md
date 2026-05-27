@@ -8,6 +8,8 @@
 [![FastAPI](https://img.shields.io/badge/fastapi-0.110%2B-009688?style=flat-square&logo=fastapi)](https://fastapi.tiangolo.com)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/your-org/memoscope?style=flat-square)](https://github.com/your-org/memoscope/stargazers)
+<a href="https://medium.com/@prakulhiremath/the-ghost-in-the-context-window-introducing-memoscope-5011be9a01c9"><img src="https://img.shields.io/badge/medium-deep--dive-green?style=flat-square" /></a>
+
 
 ```
   __  __ _____ __  __  ___  ____   ____ ___  ____  _____

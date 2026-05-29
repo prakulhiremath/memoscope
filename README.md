@@ -10,7 +10,7 @@
 [![Medium Deep Dive](https://img.shields.io/badge/medium-deep--dive-green?style=flat-square)](https://medium.com/@prakulhiremath/the-ghost-in-the-context-window-introducing-memoscope-5011be9a01c9)
 [![Stars](https://img.shields.io/github/stars/prakulhiremath/memoscope?style=flat-square)](https://github.com/prakulhiremath/memoscope/stargazers)
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20440915-blue?style=flat-square)](https://doi.org/10.5281/zenodo.20440915)
-
+[![Medium](https://img.shields.io/badge/Medium-The%20Ghost%20in%20the%20Context%20Window-black?style=for-the-badge&logo=medium)](https://medium.com/@prakulhiremath/the-ghost-in-the-context-window-introducing-memoscope-5011be9a01c9)
 
 ```
   __  __ _____ __  __  ___  ____   ____ ___  ____  _____

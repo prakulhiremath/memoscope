@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it as below."
+authors:
+  - family-names: "Hiremath"
+    given-names: "Prakul Sunil"
+    affiliation: "Aliens on Earth (AoE)"
+title: "memoscope: Real-Time Non-Intrusive Internal State Telemetry and Memory Inspector Dashboard for Sequential Neural Architectures"
+version: "0.1.1"
+date-released: 2026-05-29
+repository-code: "https://github.com/prakulhiremath/memoscope"
+keywords:
+  - large language models
+  - state space models
+  - mechanistic interpretability
+  - pytorch hooks
+  - model telemetry
